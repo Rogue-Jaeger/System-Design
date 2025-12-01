@@ -1,0 +1,345 @@
+graph TB
+    subgraph "Producer Application"
+        App[Application Code]
+        ProducerAPI[KafkaProducer API<br/>send(), flush(), close()]
+        
+        App --> ProducerAPI
+        
+        subgraph "Producer Configuration"
+            Config[Producer Config]
+            BootstrapServers[bootstrap.servers]
+            KeySerializer[key.serializer]
+            ValueSerializer[value.serializer]
+            Acks[acks: 0, 1, all/-1]
+            Retries[retries, retry.backoff.ms]
+            BatchSize[batch.size: 16KB default]
+            LingerMs[linger.ms: 0 default]
+            BufferMemory[buffer.memory: 32MB default]
+            Compression[compression.type:<br/>none, gzip, snappy, lz4, zstd]
+            MaxInFlight[max.in.flight.requests.per.connection: 5]
+            EnableIdempotence[enable.idempotence: false]
+            TransactionalId[transactional.id]
+            
+            Config --> BootstrapServers
+            Config --> KeySerializer
+            Config --> ValueSerializer
+            Config --> Acks
+            Config --> Retries
+            Config --> BatchSize
+            Config --> LingerMs
+            Config --> BufferMemory
+            Config --> Compression
+            Config --> MaxInFlight
+            Config --> EnableIdempotence
+            Config --> TransactionalId
+        end
+        
+        ProducerAPI --> Config
+    end
+    
+    subgraph "Producer Internals"
+        subgraph "Serialization Layer"
+            Serializer[Serializer]
+            KeySer[Key Serializer]
+            ValueSer[Value Serializer]
+            Headers[Headers Serializer]
+            
+            Serializer --> KeySer
+            Serializer --> ValueSer
+            Serializer --> Headers
+        end
+        
+        ProducerAPI --> Serializer
+        
+        subgraph "Partitioning Layer"
+            Partitioner[Partitioner]
+            
+            subgraph "Partitioning Strategies"
+                DefaultPart[Default Partitioner<br/>Hash(key) % partitions<br/>Round-robin if no key]
+                RoundRobinPart[Round Robin Partitioner<br/>Ignores key]
+                UniformStickyPart[Uniform Sticky Partitioner<br/>Sticky batching]
+                CustomPart[Custom Partitioner<br/>Implement Partitioner interface]
+            end
+            
+            Partitioner --> DefaultPart
+            Partitioner --> RoundRobinPart
+            Partitioner --> UniformStickyPart
+            Partitioner --> CustomPart
+        end
+        
+        Serializer --> Partitioner
+        
+        subgraph "Record Accumulator"
+            Accumulator[Record Accumulator<br/>buffer.memory]
+            
+            subgraph "Batching Structure"
+                TopicPartitionMap[ConcurrentMap<br/>TopicPartition -> Deque<ProducerBatch>]
+                Deque1[Deque for Partition 0]
+                Deque2[Deque for Partition 1]
+                DequeN[Deque for Partition N]
+                
+                TopicPartitionMap --> Deque1
+                TopicPartitionMap --> Deque2
+                TopicPartitionMap --> DequeN
+                
+                Batch1[ProducerBatch 1<br/>MemoryRecords]
+                Batch2[ProducerBatch 2<br/>In-flight]
+                Batch3[ProducerBatch 3<br/>Accumulating]
+                
+                Deque1 --> Batch1
+                Deque1 --> Batch2
+                Deque1 --> Batch3
+            end
+            
+            Accumulator --> TopicPartitionMap
+            
+            BufferPool[Buffer Pool<br/>Reusable ByteBuffers<br/>batch.size chunks]
+            
+            Accumulator --> BufferPool
+            
+            subgraph "Batch Ready Conditions"
+                BatchFull[Batch size >= batch.size]
+                LingerExpired[Time >= linger.ms]
+                BufferFull[Buffer memory exhausted]
+                FlushCalled[flush() called]
+                PartitionReady[Partition has leader]
+                
+                Batch3 -.->|Ready when| BatchFull
+                Batch3 -.->|Ready when| LingerExpired
+                Batch3 -.->|Ready when| BufferFull
+                Batch3 -.->|Ready when| FlushCalled
+            end
+        end
+        
+        Partitioner --> Accumulator
+        
+        subgraph "Metadata Management"
+            MetadataCache[Metadata Cache]
+            
+            subgraph "Cached Metadata"
+                ClusterMeta[Cluster Metadata<br/>Brokers, Endpoints]
+                TopicMeta[Topic Metadata<br/>Partitions, Leaders]
+                PartitionMeta[Partition Metadata<br/>Leader, Replicas, ISR]
+            end
+            
+            MetadataCache --> ClusterMeta
+            MetadataCache --> TopicMeta
+            MetadataCache --> PartitionMeta
+            
+            MetadataUpdater[Metadata Updater<br/>metadata.max.age.ms: 5min]
+            
+            MetadataCache --> MetadataUpdater
+        end
+        
+        Accumulator -.->|Needs metadata| MetadataCache
+        
+        subgraph "Sender Thread"
+            Sender[Sender Thread<br/>Background I/O thread]
+            
+            subgraph "Request Preparation"
+                ReadyCheck[Check ready partitions]
+                NodeBatches[Group batches by broker node]
+                CreateRequests[Create ProduceRequest per node]
+                
+                Sender --> ReadyCheck
+                ReadyCheck --> NodeBatches
+                NodeBatches --> CreateRequests
+            end
+            
+            subgraph "In-Flight Management"
+                InFlightRequests[In-Flight Requests<br/>max.in.flight.requests.per.connection]
+                RequestQueue[Per-node request queues]
+                
+                CreateRequests --> InFlightRequests
+                InFlightRequests --> RequestQueue
+            end
+            
+            subgraph "Network Client"
+                NetworkClient[Network Client]
+                Selector[NIO Selector<br/>Non-blocking I/O]
+                
+                NetworkClient --> Selector
+                
+                subgraph "Connection Management"
+                    ConnPool[Connection Pool<br/>Per broker]
+                    ConnState[Connection States<br/>DISCONNECTED, CONNECTING,<br/>CONNECTED, AUTHENTICATING]
+                    
+                    NetworkClient --> ConnPool
+                    ConnPool --> ConnState
+                end
+            end
+            
+            RequestQueue --> NetworkClient
+        end
+        
+        Accumulator --> Sender
+        
+        subgraph "Idempotent Producer"
+            IdempotentMgr[Idempotent Producer Manager<br/>enable.idempotence=true]
+            
+            ProducerIdState[Producer ID State<br/>PID, Epoch]
+            SequenceNumbers[Sequence Numbers<br/>Per partition, starts at 0]
+            
+            IdempotentMgr --> ProducerIdState
+            IdempotentMgr --> SequenceNumbers
+            
+            subgraph "Idempotence Guarantees"
+                DupDetection[Duplicate Detection<br/>Broker tracks sequences]
+                OrderGuarantee[Ordering Guarantee<br/>max.in.flight=5 safe]
+                RetryLogic[Automatic Retry<br/>No message loss]
+            end
+            
+            IdempotentMgr --> DupDetection
+            IdempotentMgr --> OrderGuarantee
+            IdempotentMgr --> RetryLogic
+        end
+        
+        Sender -.->|Uses when enabled| IdempotentMgr
+        
+        subgraph "Transactional Producer"
+            TxnMgr[Transaction Manager<br/>transactional.id set]
+            
+            TxnCoordinator[Transaction Coordinator<br/>On broker]
+            TxnState[Transaction State<br/>__transaction_state topic]
+            
+            TxnMgr --> TxnCoordinator
+            TxnCoordinator --> TxnState
+            
+            subgraph "Transaction API"
+                InitTxn[initTransactions()<br/>Get PID, bump epoch]
+                BeginTxn[beginTransaction()<br/>Start txn]
+                SendTxn[send() in transaction]
+                SendOffsets[sendOffsetsToTransaction()<br/>Consumer offsets]
+                CommitTxn[commitTransaction()<br/>2PC commit]
+                AbortTxn[abortTransaction()<br/>Rollback]
+            end
+            
+            TxnMgr --> InitTxn
+            TxnMgr --> BeginTxn
+            TxnMgr --> SendTxn
+            TxnMgr --> SendOffsets
+            TxnMgr --> CommitTxn
+            TxnMgr --> AbortTxn
+            
+            subgraph "Transaction Protocol"
+                AddPartitions[AddPartitionsToTxn<br/>Register partitions]
+                AddOffsets[AddOffsetsToTxn<br/>Register consumer group]
+                EndTxn[EndTxn<br/>Prepare commit/abort]
+                WriteTxnMarkers[WriteTxnMarkers<br/>Control records to partitions]
+            end
+            
+            CommitTxn --> AddPartitions
+            CommitTxn --> AddOffsets
+            CommitTxn --> EndTxn
+            EndTxn --> WriteTxnMarkers
+        end
+        
+        Sender -.->|Uses when enabled| TxnMgr
+        
+        subgraph "Compression"
+            Compressor[Compressor]
+            
+            subgraph "Compression Algorithms"
+                NoComp[None<br/>No CPU, more network]
+                Gzip[GZIP<br/>Best compression, slow]
+                Snappy[Snappy<br/>Balanced]
+                Lz4[LZ4<br/>Fast, good compression]
+                Zstd[ZSTD<br/>Best balance, Kafka 2.1+]
+            end
+            
+            Compressor --> NoComp
+            Compressor --> Gzip
+            Compressor --> Snappy
+            Compressor --> Lz4
+            Compressor --> Zstd
+            
+            CompressedBatch[Compressed Batch<br/>Compression per batch<br/>Not per record]
+            
+            Compressor --> CompressedBatch
+        end
+        
+        Batch3 -.->|Compressed before send| Compressor
+        
+        subgraph "Response Handling"
+            ResponseHandler[Response Handler]
+            
+            subgraph "Response Types"
+                SuccessResp[Success Response<br/>Offset, timestamp]
+                RetriableError[Retriable Error<br/>NOT_LEADER, REPLICA_NOT_AVAILABLE]
+                FatalError[Fatal Error<br/>INVALID_CONFIG, AUTHORIZATION_FAILED]
+                TimeoutError[Timeout Error<br/>REQUEST_TIMED_OUT]
+            end
+            
+            ResponseHandler --> SuccessResp
+            ResponseHandler --> RetriableError
+            ResponseHandler --> FatalError
+            ResponseHandler --> TimeoutError
+            
+            RetryQueue[Retry Queue]
+            CallbackExec[Callback Executor]
+            
+            RetriableError --> RetryQueue
+            SuccessResp --> CallbackExec
+            FatalError --> CallbackExec
+        end
+        
+        NetworkClient --> ResponseHandler
+        RetryQueue --> Accumulator
+        
+        subgraph "Callbacks & Futures"
+            Future[Future<RecordMetadata>]
+            Callback[Callback Interface<br/>onCompletion()]
+            
+            ProducerAPI --> Future
+            ProducerAPI --> Callback
+            
+            RecordMetadata[RecordMetadata<br/>topic, partition, offset,<br/>timestamp, serializedKeySize,<br/>serializedValueSize]
+            
+            CallbackExec --> Future
+            CallbackExec --> Callback
+            CallbackExec --> RecordMetadata
+        end
+    end
+    
+    subgraph "Broker Interaction"
+        BrokerAPI[Broker API Layer]
+        
+        subgraph "Produce Request"
+            ProduceReq[ProduceRequest<br/>acks, timeout]
+            ReqHeader[Request Header<br/>API key, version, correlation ID]
+            ReqBody[Request Body<br/>transactional_id, acks, timeout,<br/>topic_data]
+            TopicData[Topic Data<br/>topic, partition_data]
+            PartitionData[Partition Data<br/>partition, records]
+            
+            ProduceReq --> ReqHeader
+            ProduceReq --> ReqBody
+            ReqBody --> TopicData
+            TopicData --> PartitionData
+        end
+        
+        NetworkClient --> ProduceReq
+        ProduceReq --> BrokerAPI
+        
+        subgraph "Produce Response"
+            ProduceResp[ProduceResponse]
+            RespHeader[Response Header<br/>correlation ID]
+            RespBody[Response Body<br/>responses, throttle_time_ms]
+            TopicResp[Topic Response<br/>topic, partition_responses]
+            PartitionResp[Partition Response<br/>partition, error_code,<br/>base_offset, log_append_time]
+            
+            ProduceResp --> RespHeader
+            ProduceResp --> RespBody
+            RespBody --> TopicResp
+            TopicResp --> PartitionResp
+        end
+        
+        BrokerAPI --> ProduceResp
+        ProduceResp --> ResponseHandler
+    end
+    
+    style ProducerAPI fill:#99ccff
+    style Accumulator fill:#99ff99
+    style Sender fill:#ffcc99
+    style IdempotentMgr fill:#ff9999
+    style TxnMgr fill:#cc99ff
+    style NetworkClient fill:#ffff99

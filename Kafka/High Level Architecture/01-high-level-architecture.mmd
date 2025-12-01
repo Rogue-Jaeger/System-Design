@@ -1,0 +1,175 @@
+---
+config:
+  layout: elk
+  look: classic
+  theme: redux
+---
+flowchart TB
+ subgraph subGraph0["Storage - Broker 1"]
+        B1_Logs[("Log Segments<br>*.log, *.index, *.timeindex")]
+        B1_Meta[("Metadata Cache")]
+  end
+ subgraph subGraph1["Broker 1 (Controller)"]
+        B1["Broker Process"]
+        B1_Controller["Controller Module"]
+        B1_RM["Replica Manager"]
+        B1_LM["Log Manager"]
+        B1_NW["Network Layer"]
+        B1_API["API Layer"]
+        subGraph0
+  end
+ subgraph subGraph2["Storage - Broker 2"]
+        B2_Logs[("Log Segments")]
+        B2_Meta[("Metadata Cache")]
+  end
+ subgraph subGraph3["Broker 2"]
+        B2["Broker Process"]
+        B2_RM["Replica Manager"]
+        B2_LM["Log Manager"]
+        B2_NW["Network Layer"]
+        B2_API["API Layer"]
+        subGraph2
+  end
+ subgraph subGraph4["Storage - Broker 3"]
+        B3_Logs[("Log Segments")]
+        B3_Meta[("Metadata Cache")]
+  end
+ subgraph subGraph5["Broker 3"]
+        B3["Broker Process"]
+        B3_RM["Replica Manager"]
+        B3_LM["Log Manager"]
+        B3_NW["Network Layer"]
+        B3_API["API Layer"]
+        subGraph4
+  end
+ subgraph subGraph6["Broker Services"]
+        GC["Group Coordinator"]
+        OC["Offset Coordinator<br>__consumer_offsets topic"]
+        TC["Transaction Coordinator<br>__transaction_state topic"]
+  end
+ subgraph subGraph7["Topics & Partitions"]
+        T1["Topic: orders"]
+        T1P0["Partition 0<br>Leader: B1, Replicas: B1,B2"]
+        T1P1["Partition 1<br>Leader: B2, Replicas: B2,B3"]
+        T1P2["Partition 2<br>Leader: B3, Replicas: B3,B1"]
+        T2["Topic: payments"]
+        T2P0["Partition 0<br>Leader: B2, Replicas: B2,B1"]
+        T2P1["Partition 1<br>Leader: B3, Replicas: B3,B2"]
+  end
+ subgraph subGraph8["Kafka Cluster"]
+        subGraph1
+        subGraph3
+        subGraph5
+        subGraph6
+        subGraph7
+  end
+ subgraph subGraph9["Coordination Layer"]
+        ZK["ZooKeeper Ensemble<br>or<br>KRaft Metadata Quorum"]
+        ZK_Data["/brokers/ids<br>/brokers/topics<br>/controller<br>/config<br>/admin"]
+  end
+ subgraph Producers["Producers"]
+        P1["Producer 1"]
+        P1_Part["Partitioner"]
+        P1_Batch["Record Accumulator<br>Batching &amp; Compression"]
+        P1_Sender["Sender Thread"]
+        P1_Meta["Metadata Cache"]
+        P2["Producer 2<br>Transactional"]
+        P2_Part["Partitioner"]
+        P2_Batch["Record Accumulator"]
+        P2_Sender["Sender Thread"]
+        P2_Meta["Metadata Cache"]
+  end
+ subgraph subGraph11["Consumer Group 1<br>(e.g., order-fulfillment-service)"]
+        CG1_Note["📌 Exactly-Once Guarantee:<br>Within this group only<br>Each partition → 1 consumer"]
+        C1["Consumer 1<br>Subscribed: orders, payments"]
+        C1_Fetch["Fetcher"]
+        C1_Coord["Group Coordinator Client"]
+        C1_Sub["Subscription State"]
+        C1_Offset["Offset: orders-P0=1200<br>payments-P0=800"]
+        C2["Consumer 2<br>Subscribed: orders, payments"]
+        C2_Fetch["Fetcher"]
+        C2_Coord["Group Coordinator Client"]
+        C2_Offset["Offset: orders-P1=2100<br>orders-P2=1900<br>payments-P1=950"]
+  end
+ subgraph subGraph12["Consumer Group 2<br>(e.g., analytics-service)"]
+        CG2_Note["📌 Exactly-Once Guarantee:<br>Within this group only<br>Independent from Group 1"]
+        C3["Consumer 3<br>Subscribed: orders, payments"]
+        C3_Fetch["Fetcher"]
+        C3_Coord["Group Coordinator Client"]
+        C3_Offset["Offset: orders-P0=1200<br>orders-P1=2100<br>orders-P2=1600<br>payments-P0=500<br>payments-P1=700"]
+  end
+ subgraph Consumers["Consumers"]
+        subGraph11
+        subGraph12
+  end
+    B1 --> B1_Controller & B1_RM & B1_LM & B1_NW & B1_API & OC
+    B1_API --> B1_RM
+    B1_NW --> B1_API
+    B1_LM --> B1_Logs
+    B1_RM --> B1_Meta
+    B1_Controller --> B1_Meta
+    B2 --> B2_RM & B2_LM & B2_NW & B2_API & GC
+    B2_API --> B2_RM
+    B2_NW --> B2_API
+    B2_LM --> B2_Logs
+    B2_RM --> B2_Meta
+    B3 --> B3_RM & B3_LM & B3_NW & B3_API & TC
+    B3_API --> B3_RM
+    B3_NW --> B3_API
+    B3_LM --> B3_Logs
+    B3_RM --> B3_Meta
+    T1 --> T1P0 & T1P1 & T1P2
+    T2 --> T2P0 & T2P1
+    T1P0 --> B1_Logs
+    T1P0 -.-> B2_Logs
+    T1P1 --> B2_Logs
+    T1P1 -.-> B3_Logs
+    T1P2 --> B3_Logs
+    T1P2 -.-> B1_Logs
+    T2P0 --> B2_Logs
+    T2P0 -.-> B1_Logs
+    T2P1 --> B3_Logs
+    T2P1 -.-> B2_Logs
+    ZK --> ZK_Data
+    P1 --> P1_Part & P1_Meta
+    P1_Part --> P1_Batch
+    P1_Batch --> P1_Sender
+    P1_Sender -.-> P1_Meta
+    P2 --> P2_Part & P2_Meta
+    P2_Part --> P2_Batch
+    P2_Batch --> P2_Sender
+    P2_Sender -.-> P2_Meta
+    C1 --> C1_Fetch & C1_Coord & C1_Sub & C1_Offset
+    C2 --> C2_Fetch & C2_Coord & C2_Offset
+    C3 --> C3_Fetch & C3_Coord & C3_Offset
+    B1_Controller -. Watches & Updates .-> ZK
+    B1 -. Registers & Watches .-> ZK
+    B2 -. Registers & Watches .-> ZK
+    B3 -. Registers & Watches .-> ZK
+    P1_Sender -- Produce Requests --> B1_NW & B2_NW
+    P2_Sender -- Produce Requests --> B2_NW & B3_NW
+    P1_Meta -. Metadata Requests .-> B1_NW
+    P2_Meta -. Metadata Requests .-> B2_NW
+    P2 -. Transaction Protocol .-> TC
+    C1_Fetch -- Fetch Requests --> B1_NW & B2_NW
+    C2_Fetch -- Fetch Requests --> B2_NW
+    C3_Fetch -- Fetch Requests --> B3_NW
+    C1_Coord -. JoinGroup, SyncGroup, Heartbeat .-> GC
+    C2_Coord -. JoinGroup, SyncGroup, Heartbeat .-> GC
+    C3_Coord -. JoinGroup, SyncGroup, Heartbeat .-> GC
+    C1_Offset -. "Offset Commit/Fetch<br>(Group 1 offsets)" .-> OC
+    C2_Offset -. "Offset Commit/Fetch<br>(Group 1 offsets)" .-> OC
+    C3_Offset -. "Offset Commit/Fetch<br>(Group 2 offsets)" .-> OC
+    B1_RM -. Replication Fetch .-> B2_RM
+    B2_RM -. Replication Fetch .-> B3_RM
+    B3_RM -. Replication Fetch .-> B1_RM
+    style B1_Controller fill:#ff9999
+    style GC fill:#cc99ff
+    style OC fill:#cc99ff
+    style TC fill:#cc99ff
+    style ZK fill:#99ccff
+    style P2 fill:#ffcc99
+    style subGraph11 fill:#e6f3ff,stroke:#0066cc,stroke-width:3px
+    style subGraph12 fill:#fff0e6,stroke:#cc6600,stroke-width:3px
+    style CG1_Note fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    style CG2_Note fill:#ffe6cc,stroke:#cc6600,stroke-width:2px

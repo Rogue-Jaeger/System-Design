@@ -1,0 +1,629 @@
+graph TB
+    subgraph "Kafka Storage Architecture"
+        subgraph "Log Directory Structure"
+            LogDirs[Log Directories<br/>log.dirs=/data/kafka-logs-1,/data/kafka-logs-2]
+            
+            Dir1[/data/kafka-logs-1]
+            Dir2[/data/kafka-logs-2]
+            
+            LogDirs --> Dir1
+            LogDirs --> Dir2
+            
+            subgraph "Directory Contents"
+                TopicPartition1[orders-0/<br/>Topic: orders, Partition: 0]
+                TopicPartition2[orders-1/<br/>Topic: orders, Partition: 1]
+                TopicPartition3[payments-0/<br/>Topic: payments, Partition: 0]
+                InternalTopics[__consumer_offsets-0/<br/>__transaction_state-0/]
+                
+                Dir1 --> TopicPartition1
+                Dir1 --> TopicPartition2
+                Dir2 --> TopicPartition3
+                Dir2 --> InternalTopics
+            end
+            
+            subgraph "Partition Directory - orders-0"
+                PartDir[orders-0/]
+                
+                subgraph "Log Segments"
+                    Seg1[00000000000000000000.log<br/>Base offset: 0<br/>Size: 1GB]
+                    Seg2[00000000000001000000.log<br/>Base offset: 1000000<br/>Size: 1GB]
+                    Seg3[00000000000002000000.log<br/>Base offset: 2000000<br/>Active segment]
+                    
+                    PartDir --> Seg1
+                    PartDir --> Seg2
+                    PartDir --> Seg3
+                end
+                
+                subgraph "Index Files"
+                    Idx1[00000000000000000000.index<br/>Offset index<br/>Sparse index]
+                    Idx2[00000000000001000000.index<br/>Offset index]
+                    Idx3[00000000000002000000.index<br/>Offset index]
+                    
+                    PartDir --> Idx1
+                    PartDir --> Idx2
+                    PartDir --> Idx3
+                end
+                
+                subgraph "Time Index Files"
+                    TimeIdx1[00000000000000000000.timeindex<br/>Timestamp index]
+                    TimeIdx2[00000000000001000000.timeindex<br/>Timestamp index]
+                    TimeIdx3[00000000000002000000.timeindex<br/>Timestamp index]
+                    
+                    PartDir --> TimeIdx1
+                    PartDir --> TimeIdx2
+                    PartDir --> TimeIdx3
+                end
+                
+                subgraph "Transaction Index Files"
+                    TxnIdx1[00000000000000000000.txnindex<br/>Aborted transaction index]
+                    TxnIdx2[00000000000001000000.txnindex]
+                    
+                    PartDir --> TxnIdx1
+                    PartDir --> TxnIdx2
+                end
+                
+                subgraph "Snapshot Files"
+                    Snapshot[00000000000001000000.snapshot<br/>Producer state snapshot]
+                    
+                    PartDir --> Snapshot
+                end
+                
+                subgraph "Metadata Files"
+                    LeaderEpoch[leader-epoch-checkpoint<br/>Leader epoch history]
+                    ReplicationOffset[replication-offset-checkpoint<br/>Recovery point]
+                    
+                    PartDir --> LeaderEpoch
+                    PartDir --> ReplicationOffset
+                end
+            end
+            
+            TopicPartition1 --> PartDir
+        end
+        
+        subgraph "Log Segment Details"
+            LogSegment[Log Segment File<br/>.log file]
+            
+            subgraph "Segment Configuration"
+                SegmentSize[segment.bytes<br/>Default: 1GB<br/>Max segment size]
+                SegmentTime[segment.ms<br/>Default: 7 days<br/>Max segment age]
+                SegmentJitter[segment.jitter.ms<br/>Random jitter for rolling]
+                
+                LogSegment -.->|Config| SegmentSize
+                LogSegment -.->|Config| SegmentTime
+                LogSegment -.->|Config| SegmentJitter
+            end
+            
+            subgraph "Segment Structure"
+                RecordBatch1[Record Batch 1]
+                RecordBatch2[Record Batch 2]
+                RecordBatchN[Record Batch N]
+                
+                LogSegment --> RecordBatch1
+                LogSegment --> RecordBatch2
+                LogSegment --> RecordBatchN
+            end
+            
+            subgraph "Record Batch Format (v2)"
+                BatchHeader[Batch Header]
+                
+                BaseOffset[Base Offset: 8 bytes<br/>First offset in batch]
+                BatchLength[Batch Length: 4 bytes<br/>Size of batch]
+                PartitionLeaderEpoch[Partition Leader Epoch: 4 bytes]
+                Magic[Magic: 1 byte<br/>Version 2]
+                CRC[CRC: 4 bytes<br/>CRC32C checksum]
+                Attributes[Attributes: 2 bytes<br/>Compression, timestamp type,<br/>transactional, control]
+                LastOffsetDelta[Last Offset Delta: 4 bytes]
+                FirstTimestamp[First Timestamp: 8 bytes]
+                MaxTimestamp[Max Timestamp: 8 bytes]
+                ProducerId[Producer ID: 8 bytes<br/>For idempotence]
+                ProducerEpoch[Producer Epoch: 2 bytes]
+                BaseSequence[Base Sequence: 4 bytes<br/>For idempotence]
+                RecordCount[Record Count: 4 bytes<br/>Number of records]
+                
+                BatchHeader --> BaseOffset
+                BatchHeader --> BatchLength
+                BatchHeader --> PartitionLeaderEpoch
+                BatchHeader --> Magic
+                BatchHeader --> CRC
+                BatchHeader --> Attributes
+                BatchHeader --> LastOffsetDelta
+                BatchHeader --> FirstTimestamp
+                BatchHeader --> MaxTimestamp
+                BatchHeader --> ProducerId
+                BatchHeader --> ProducerEpoch
+                BatchHeader --> BaseSequence
+                BatchHeader --> RecordCount
+                
+                RecordBatch1 --> BatchHeader
+                
+                Records[Records<br/>Compressed if specified]
+                
+                RecordBatch1 --> Records
+            end
+            
+            subgraph "Individual Record Format"
+                Record[Record]
+                
+                Length[Length: varint<br/>Record length]
+                Attributes2[Attributes: 1 byte]
+                TimestampDelta[Timestamp Delta: varlong<br/>Delta from batch timestamp]
+                OffsetDelta[Offset Delta: varint<br/>Delta from base offset]
+                KeyLength[Key Length: varint]
+                Key[Key: byte array]
+                ValueLength[Value Length: varint]
+                Value[Value: byte array]
+                HeaderCount[Header Count: varint]
+                Headers[Headers: array<br/>Key-value pairs]
+                
+                Record --> Length
+                Record --> Attributes2
+                Record --> TimestampDelta
+                Record --> OffsetDelta
+                Record --> KeyLength
+                Record --> Key
+                Record --> ValueLength
+                Record --> Value
+                Record --> HeaderCount
+                Record --> Headers
+                
+                Records --> Record
+            end
+        end
+        
+        subgraph "Index Files"
+            subgraph "Offset Index"
+                OffsetIndex[Offset Index<br/>.index file]
+                
+                OffsetIndexDesc[Sparse Index<br/>Maps offset to file position]
+                
+                OffsetIndex --> OffsetIndexDesc
+                
+                subgraph "Index Entry"
+                    RelativeOffset[Relative Offset: 4 bytes<br/>Offset - base offset]
+                    Position[Position: 4 bytes<br/>Byte position in .log file]
+                    
+                    OffsetIndexDesc --> RelativeOffset
+                    OffsetIndexDesc --> Position
+                end
+                
+                subgraph "Index Configuration"
+                    IndexInterval[index.interval.bytes<br/>Default: 4096<br/>Bytes between index entries]
+                    
+                    OffsetIndex -.->|Config| IndexInterval
+                end
+                
+                subgraph "Index Usage"
+                    BinarySearch[Binary Search<br/>Find closest offset <= target]
+                    SeekToPosition[Seek to position in .log]
+                    ScanForward[Scan forward to exact offset]
+                    
+                    OffsetIndex --> BinarySearch
+                    BinarySearch --> SeekToPosition
+                    SeekToPosition --> ScanForward
+                end
+            end
+            
+            subgraph "Time Index"
+                TimeIndex[Time Index<br/>.timeindex file]
+                
+                TimeIndexDesc[Maps timestamp to offset]
+                
+                TimeIndex --> TimeIndexDesc
+                
+                subgraph "Time Index Entry"
+                    Timestamp[Timestamp: 8 bytes]
+                    RelativeOffset2[Relative Offset: 4 bytes]
+                    
+                    TimeIndexDesc --> Timestamp
+                    TimeIndexDesc --> RelativeOffset2
+                end
+                
+                subgraph "Time Index Usage"
+                    TimeSearch[Search by timestamp<br/>For time-based retention]
+                    FindOffset[Find offset at timestamp]
+                    UseOffsetIndex[Use offset index to locate]
+                    
+                    TimeIndex --> TimeSearch
+                    TimeSearch --> FindOffset
+                    FindOffset --> UseOffsetIndex
+                end
+            end
+            
+            subgraph "Transaction Index"
+                TxnIndex[Transaction Index<br/>.txnindex file]
+                
+                TxnIndexDesc[Tracks aborted transactions<br/>For read_committed isolation]
+                
+                TxnIndex --> TxnIndexDesc
+                
+                subgraph "Transaction Index Entry"
+                    AbortedTxnVersion[Version: 2 bytes]
+                    AbortedTxnOffset[Offset: 8 bytes<br/>First offset of aborted txn]
+                    
+                    TxnIndexDesc --> AbortedTxnVersion
+                    TxnIndexDesc --> AbortedTxnOffset
+                end
+                
+                subgraph "Transaction Index Usage"
+                    FilterAborted[Filter Aborted Records<br/>Consumer with read_committed]
+                    SkipRecords[Skip records in aborted txns]
+                    
+                    TxnIndex --> FilterAborted
+                    FilterAborted --> SkipRecords
+                end
+            end
+        end
+        
+        subgraph "Log Compaction"
+            Compaction[Log Compaction<br/>cleanup.policy=compact]
+            
+            subgraph "Compaction Configuration"
+                CompactConfig[Compaction Config]
+                
+                MinCleanRatio[min.cleanable.dirty.ratio<br/>Default: 0.5<br/>Trigger compaction]
+                DeleteRetention[delete.retention.ms<br/>Default: 24 hours<br/>Keep tombstones]
+                MinCompactionLag[min.compaction.lag.ms<br/>Minimum age before compaction]
+                MaxCompactionLag[max.compaction.lag.ms<br/>Maximum age before compaction]
+                
+                CompactConfig --> MinCleanRatio
+                CompactConfig --> DeleteRetention
+                CompactConfig --> MinCompactionLag
+                CompactConfig --> MaxCompactionLag
+            end
+            
+            Compaction --> CompactConfig
+            
+            subgraph "Compaction Process"
+                LogStructure[Log Structure]
+                
+                CleanSection[Clean Section<br/>Already compacted<br/>One record per key]
+                DirtySection[Dirty Section<br/>Not yet compacted<br/>Multiple records per key]
+                
+                LogStructure --> CleanSection
+                LogStructure --> DirtySection
+                
+                CleanPoint[Clean Point<br/>Boundary between clean and dirty]
+                
+                LogStructure --> CleanPoint
+                
+                ActiveSegment2[Active Segment<br/>Never compacted]
+                
+                LogStructure --> ActiveSegment2
+            end
+            
+            Compaction --> LogStructure
+            
+            subgraph "Compaction Algorithm"
+                CleanerThread[Cleaner Thread<br/>log.cleaner.threads]
+                
+                BuildOffsetMap[1. Build Offset Map<br/>Key -> Latest Offset<br/>In-memory hash map]
+                ScanDirty[2. Scan Dirty Section<br/>Record latest offset per key]
+                CopyClean[3. Copy to Clean<br/>Keep only latest per key]
+                SwapSegments[4. Swap Segments<br/>Replace old with compacted]
+                
+                CleanerThread --> BuildOffsetMap
+                BuildOffsetMap --> ScanDirty
+                ScanDirty --> CopyClean
+                CopyClean --> SwapSegments
+                
+                subgraph "Offset Map"
+                    MapSize[log.cleaner.dedupe.buffer.size<br/>Default: 128MB<br/>Memory for offset map]
+                    MapLoad[log.cleaner.io.buffer.load.factor<br/>Default: 0.9<br/>Hash map load factor]
+                    
+                    BuildOffsetMap -.->|Config| MapSize
+                    BuildOffsetMap -.->|Config| MapLoad
+                end
+            end
+            
+            Compaction --> CleanerThread
+            
+            subgraph "Tombstone Records"
+                Tombstone[Tombstone Record<br/>null value]
+                
+                DeleteKey[Marks key for deletion]
+                RetainPeriod[Retained for delete.retention.ms<br/>Allow consumers to see deletion]
+                FinalDelete[Eventually removed by compaction]
+                
+                Tombstone --> DeleteKey
+                Tombstone --> RetainPeriod
+                RetainPeriod --> FinalDelete
+            end
+            
+            Compaction --> Tombstone
+        end
+        
+        subgraph "Log Retention"
+            Retention[Log Retention<br/>cleanup.policy=delete]
+            
+            subgraph "Retention Configuration"
+                RetentionConfig[Retention Config]
+                
+                RetentionTime[log.retention.hours<br/>Default: 168 (7 days)<br/>Time-based retention]
+                RetentionBytes[log.retention.bytes<br/>Default: -1 (unlimited)<br/>Size-based retention]
+                RetentionCheck[log.retention.check.interval.ms<br/>Default: 300000 (5 min)<br/>Check frequency]
+                
+                RetentionConfig --> RetentionTime
+                RetentionConfig --> RetentionBytes
+                RetentionConfig --> RetentionCheck
+            end
+            
+            Retention --> RetentionConfig
+            
+            subgraph "Retention Process"
+                RetentionChecker[Retention Checker<br/>Periodic background task]
+                
+                CheckSegments[Check Eligible Segments<br/>Not active segment]
+                TimeCheck[Time Check<br/>segment.maxTimestamp < now - retention]
+                SizeCheck[Size Check<br/>Total size > retention.bytes]
+                DeleteSegment[Delete Segment<br/>Delete .log, .index, .timeindex]
+                
+                RetentionChecker --> CheckSegments
+                CheckSegments --> TimeCheck
+                CheckSegments --> SizeCheck
+                TimeCheck --> DeleteSegment
+                SizeCheck --> DeleteSegment
+            end
+            
+            Retention --> RetentionChecker
+            
+            subgraph "Retention Strategies"
+                TimeBased[Time-Based<br/>Delete old segments]
+                SizeBased[Size-Based<br/>Delete oldest when over limit]
+                Combined[Combined<br/>Both time and size]
+                
+                Retention --> TimeBased
+                Retention --> SizeBased
+                Retention --> Combined
+            end
+        end
+        
+        subgraph "Log Flushing"
+            Flushing[Log Flushing<br/>Write to disk]
+            
+            subgraph "Flush Configuration"
+                FlushConfig[Flush Config]
+                
+                FlushMessages[log.flush.interval.messages<br/>Default: Long.MAX_VALUE<br/>Messages before flush]
+                FlushTime[log.flush.interval.ms<br/>Default: Long.MAX_VALUE<br/>Time before flush]
+                FlushScheduler[log.flush.scheduler.interval.ms<br/>Default: Long.MAX_VALUE<br/>Periodic flush]
+                
+                FlushConfig --> FlushMessages
+                FlushConfig --> FlushTime
+                FlushConfig --> FlushScheduler
+            end
+            
+            Flushing --> FlushConfig
+            
+            subgraph "Flush Strategy"
+                OSPageCache[OS Page Cache<br/>Default strategy]
+                
+                RelyOnOS[Rely on OS<br/>fsync() not called explicitly<br/>Better performance]
+                OSManages[OS manages dirty pages<br/>vm.dirty_ratio, vm.dirty_background_ratio]
+                ReplicationProtects[Replication provides durability<br/>Not flush]
+                
+                OSPageCache --> RelyOnOS
+                OSPageCache --> OSManages
+                OSPageCache --> ReplicationProtects
+            end
+            
+            Flushing --> OSPageCache
+            
+            subgraph "Explicit Flush"
+                ExplicitFlush[Explicit Flush<br/>When configured]
+                
+                FlushTrigger[Flush Trigger<br/>Message count or time]
+                CallFsync[Call fsync()<br/>Force to disk]
+                SlowerWrites[Slower Writes<br/>Wait for disk I/O]
+                
+                ExplicitFlush --> FlushTrigger
+                FlushTrigger --> CallFsync
+                CallFsync --> SlowerWrites
+            end
+            
+            Flushing --> ExplicitFlush
+        end
+        
+        subgraph "Zero-Copy Optimization"
+            ZeroCopy[Zero-Copy Transfer<br/>sendfile() system call]
+            
+            subgraph "Traditional I/O"
+                TradIO[Traditional I/O Path]
+                
+                DiskToKernel[1. Disk -> Kernel Buffer<br/>DMA transfer]
+                KernelToApp[2. Kernel -> Application<br/>Copy to user space]
+                AppToSocket[3. Application -> Socket Buffer<br/>Copy to kernel space]
+                SocketToNIC[4. Socket -> Network Card<br/>DMA transfer]
+                
+                TradIO --> DiskToKernel
+                DiskToKernel --> KernelToApp
+                KernelToApp --> AppToSocket
+                AppToSocket --> SocketToNIC
+                
+                FourCopies[4 Copies, 2 Context Switches]
+                
+                TradIO --> FourCopies
+            end
+            
+            ZeroCopy --> TradIO
+            
+            subgraph "Zero-Copy I/O"
+                ZeroCopyIO[Zero-Copy I/O Path]
+                
+                DiskToKernel2[1. Disk -> Kernel Buffer<br/>DMA transfer]
+                KernelToNIC[2. Kernel -> Network Card<br/>DMA transfer, no copy]
+                
+                ZeroCopyIO --> DiskToKernel2
+                DiskToKernel2 --> KernelToNIC
+                
+                TwoCopies[2 Copies, 0 Context Switches<br/>No user-space involvement]
+                
+                ZeroCopyIO --> TwoCopies
+            end
+            
+            ZeroCopy --> ZeroCopyIO
+            
+            subgraph "Zero-Copy Benefits"
+                HighThroughput[High Throughput<br/>Reduced CPU usage]
+                LowLatency[Low Latency<br/>Fewer copies]
+                Scalability[Better Scalability<br/>Handle more connections]
+                
+                ZeroCopy --> HighThroughput
+                ZeroCopy --> LowLatency
+                ZeroCopy --> Scalability
+            end
+            
+            subgraph "Zero-Copy Requirements"
+                PageCacheHit[Page Cache Hit<br/>Data must be in page cache]
+                UncompressedData[Uncompressed Data<br/>Or client supports compression]
+                
+                ZeroCopy -.->|Requires| PageCacheHit
+                ZeroCopy -.->|Requires| UncompressedData
+            end
+        end
+        
+        subgraph "Producer State Management"
+            ProducerState[Producer State<br/>For idempotence & transactions]
+            
+            subgraph "Producer State Snapshot"
+                StateSnapshot[Producer State Snapshot<br/>.snapshot file]
+                
+                ProducerEntry[Producer Entry<br/>Per producer ID]
+                
+                PID[Producer ID]
+                Epoch2[Producer Epoch]
+                LastSeq[Last Sequence Number<br/>Per partition]
+                LastOffset2[Last Offset]
+                OffsetDelta2[Offset Delta]
+                Timestamp2[Timestamp]
+                CoordinatorEpoch[Coordinator Epoch]
+                CurrentTxnFirstOffset[Current Txn First Offset]
+                
+                ProducerEntry --> PID
+                ProducerEntry --> Epoch2
+                ProducerEntry --> LastSeq
+                ProducerEntry --> LastOffset2
+                ProducerEntry --> OffsetDelta2
+                ProducerEntry --> Timestamp2
+                ProducerEntry --> CoordinatorEpoch
+                ProducerEntry --> CurrentTxnFirstOffset
+                
+                StateSnapshot --> ProducerEntry
+            end
+            
+            ProducerState --> StateSnapshot
+            
+            subgraph "Producer State Usage"
+                DuplicateDetection[Duplicate Detection<br/>Check sequence numbers]
+                OutOfOrderDetection[Out-of-Order Detection<br/>Reject old epochs]
+                TxnTracking[Transaction Tracking<br/>Track ongoing transactions]
+                
+                ProducerState --> DuplicateDetection
+                ProducerState --> OutOfOrderDetection
+                ProducerState --> TxnTracking
+            end
+            
+            subgraph "Producer State Expiration"
+                StateExpiry[Producer State Expiration]
+                
+                IdleTime[producer.id.expiration.ms<br/>Default: 86400000 (1 day)]
+                RemoveIdle[Remove Idle Producers<br/>No activity in expiration time]
+                
+                StateExpiry --> IdleTime
+                StateExpiry --> RemoveIdle
+            end
+            
+            ProducerState --> StateExpiry
+        end
+        
+        subgraph "Recovery & Checkpoints"
+            Recovery[Recovery Process]
+            
+            subgraph "Recovery Point"
+                RecoveryPoint[Recovery Point<br/>replication-offset-checkpoint]
+                
+                LastFlushed[Last Flushed Offset<br/>Guaranteed on disk]
+                RecoveryStart[Recovery starts from here<br/>On broker restart]
+                
+                RecoveryPoint --> LastFlushed
+                RecoveryPoint --> RecoveryStart
+            end
+            
+            Recovery --> RecoveryPoint
+            
+            subgraph "Leader Epoch Checkpoint"
+                EpochCheckpoint[Leader Epoch Checkpoint<br/>leader-epoch-checkpoint]
+                
+                EpochHistory[Epoch History<br/>epoch -> start offset]
+                TruncationPoint[Truncation Point<br/>On leader change]
+                
+                EpochCheckpoint --> EpochHistory
+                EpochCheckpoint --> TruncationPoint
+            end
+            
+            Recovery --> EpochCheckpoint
+            
+            subgraph "Recovery Steps"
+                RecoverySteps[Recovery Steps]
+                
+                LoadCheckpoint[1. Load Checkpoints<br/>Recovery point, leader epoch]
+                ReplayLog[2. Replay Log<br/>From recovery point to LEO]
+                RebuildIndex[3. Rebuild Indexes<br/>If corrupted or missing]
+                RebuildProducerState[4. Rebuild Producer State<br/>From log]
+                
+                RecoverySteps --> LoadCheckpoint
+                LoadCheckpoint --> ReplayLog
+                ReplayLog --> RebuildIndex
+                RebuildIndex --> RebuildProducerState
+            end
+            
+            Recovery --> RecoverySteps
+        end
+    end
+    
+    subgraph "Performance Characteristics"
+        subgraph "Write Performance"
+            WritePerf[Write Performance]
+            
+            SequentialWrites[Sequential Writes<br/>Append-only log<br/>~600 MB/s on HDD]
+            BatchWrites[Batch Writes<br/>Amortize disk seeks]
+            PageCacheWrite[Page Cache Buffering<br/>Async writes]
+            
+            WritePerf --> SequentialWrites
+            WritePerf --> BatchWrites
+            WritePerf --> PageCacheWrite
+        end
+        
+        subgraph "Read Performance"
+            ReadPerf[Read Performance]
+            
+            SequentialReads[Sequential Reads<br/>Consumer reads sequentially]
+            PageCacheRead[Page Cache Hits<br/>Recent data in memory]
+            ZeroCopyRead[Zero-Copy Reads<br/>High throughput]
+            Prefetching[OS Prefetching<br/>Read-ahead]
+            
+            ReadPerf --> SequentialReads
+            ReadPerf --> PageCacheRead
+            ReadPerf --> ZeroCopyRead
+            ReadPerf --> Prefetching
+        end
+        
+        subgraph "Disk Usage"
+            DiskUsage[Disk Usage]
+            
+            Compression2[Compression<br/>Reduce storage<br/>gzip, snappy, lz4, zstd]
+            Compaction2[Log Compaction<br/>Remove old versions]
+            Retention2[Retention Policies<br/>Delete old data]
+            
+            DiskUsage --> Compression2
+            DiskUsage --> Compaction2
+            DiskUsage --> Retention2
+        end
+    end
+    
+    style LogSegment fill:#99ccff
+    style OffsetIndex fill:#99ff99
+    style TimeIndex fill:#ffcc99
+    style TxnIndex fill:#ff9999
+    style Compaction fill:#cc99ff
+    style Retention fill:#ffff99
+    style ZeroCopy fill:#99ffcc
