@@ -1,0 +1,159 @@
+## Design Review & Recommendations
+
+Overall, the design is **solid and logically sound** for creating an event-based audit trail. Here are my findings:
+
+---
+
+### ✅ **What Works Well**
+
+1. **Event-based approach**: ADDED/REMOVED pairs provide clear audit trail
+2. **Complete timeline**: Captures initial assignments (Part 1) + all changes (Parts 2-5)
+3. **No duplicates**: DELETE operations don't create duplicates since deleted records aren't in roster table
+4. **Proper GROUP BY**: Preserves individual events while aggregating only stores
+5. **Timezone handling**: Both US and UTC timestamps for flexibility
+
+---
+
+### ⚠️ **Potential Issues & Improvements**
+
+#### **1. Part 1 (Current Roster) - Terminology**
+```sql
+'ADDED' AS assignment_status
+FROM dbo.fm_oncall_roaster
+```
+
+**Issue**: These aren't "ADDED" events - they're **currently active** assignments. The 'ADDED' timestamp (`created_date`) might not reflect the actual assignment date if there were prior updates.
+
+**Recommendation**: Consider using `'ACTIVE'` or `'CURRENT'` instead of `'ADDED'` to distinguish them from historical events. Or add a comment explaining this represents "last known ADDED state."
+
+---
+
+#### **2. Missing `current_tech_id` for Latest Assignment**
+
+For the **most recent** tech (currently in roster table), their 'ADDED' event comes from Part 1 using `created_date`. But as we discussed, this `created_date` might be incorrect if:
+- There were non-tracked column updates (sequence_no issue)
+- The tech was assigned via UPDATE operation
+
+**Example**: A→B→C (C is current)
+- Tech C's 'ADDED' timestamp comes from `fm_oncall_roaster.created_date`
+- But C was actually assigned at the `deassignment_date` of the B→C UPDATE operation
+
+**Recommendation**: Consider using the audit table's `deassignment_date` for the current tech's 'ADDED' timestamp instead of `created_date`. You could do this with a LEFT JOIN or COALESCE logic:
+
+```sql
+-- Pseudocode concept
+COALESCE(
+    (SELECT deassignment_date FROM audit WHERE current_tech_id = roster.tech_id),
+    roster.created_date
+) AS modified_date
+```
+
+This would use the audit trail when available, falling back to `created_date` only for truly new assignments with no history.
+
+---
+
+#### **3. Duplicate 'ADDED' Events for Initial Assignments**
+
+**Scenario**: Tech A is assigned to a new slot (no prior history), then later deleted.
+
+**What happens**:
+- Part 1: Tech A 'ADDED' at T1 (from roster table) - **but only if A is still current**
+- Part 2: Tech A 'ADDED' at T1 (from DELETE audit)
+- Part 3: Tech A 'REMOVED' at T2 (from DELETE audit)
+
+If Tech A is deleted, Part 1 won't show them (not in roster anymore), so **no duplicate**. ✓
+
+But if Tech A is **still current** and somehow also in the audit table with DELETE operation... wait, that's impossible. If deleted, they're not in roster table.
+
+**Actually, no issue here.** ✓
+
+---
+
+#### **4. Performance Considerations**
+
+**Current approach**: 5 UNION ALL queries + multiple LEFT JOINs + GROUP BY + STRING_AGG
+
+**Potential bottlenecks**:
+- Multiple scans of `fm_on_call_roster_audit_history` (Parts 2-5)
+- STRING_AGG on `fm_store_group_mapping` could be slow for groups with many stores
+- No indexes mentioned on audit table except `shift_date`
+
+**Recommendations**:
+- Add index on `operation_type` in audit table: `CREATE INDEX idx_operation_type ON fm_on_call_roster_audit_history(operation_type)`
+- Consider materialized view if this is queried frequently
+- If performance is acceptable, no changes needed
+
+---
+
+#### **5. NULL Handling**
+
+Several LEFT JOINs could produce NULLs:
+- `st.win_id`, `st.full_name` (if tech_id doesn't exist in sa_technician)
+- `for2.org_role_name`, `for3.org_role_name` (if role mappings missing)
+- `focp.rm_region`, `fog.group_name` (if group/preset deleted)
+
+**Question**: Is this expected? Should these be INNER JOINs to exclude orphaned records, or are NULLs acceptable for audit purposes?
+
+**Recommendation**: Add ISNULL/COALESCE for critical fields to show 'Unknown' instead of NULL:
+```sql
+ISNULL(st.full_name, 'Unknown Tech') as tech_name,
+ISNULL(focp.rm_region, 'Unknown Region') as rm_region
+```
+
+---
+
+#### **6. Store Filtering Logic**
+
+```sql
+WHERE (fsgm.store_no NOT IN ('9991', '9992', ..., '9999') OR fsgm.store_no IS NULL)
+```
+
+**Issue**: If a group has NO stores (NULL), it's included. If a group has ONLY test stores (9991-9999), it's excluded. If a group has a MIX of real and test stores, the test stores are excluded from STRING_AGG but the record is included.
+
+**Question**: Is this the intended behavior? Should groups with ANY test stores be completely excluded?
+
+**Current behavior**: Filters test stores from the aggregated list but keeps the audit record.
+
+---
+
+#### **7. Data Type Consistency**
+
+Minor observation:
+- `modified_by_user_id` is `varchar(255)` in roster table but `varchar(100)` in audit table
+- Not an issue for the view, but could cause truncation if usernames > 100 chars are added to roster
+
+---
+
+### 🎯 **Critical Question for Point 2**
+
+You mentioned:
+> "I think that created_by date doesn't get updated once a row is created but I'll have to confirm"
+
+**This is crucial!** If `created_date` in `fm_oncall_roaster` **does NOT update** on subsequent changes, then:
+- Part 1 correctly shows the original assignment date ✓
+- No issue with sequence_no updates ✓
+
+But if it **does update**, then Issue #2 above becomes critical and needs fixing.
+
+**Please confirm this** - it changes whether the view needs modification.
+
+---
+
+### 📋 **Summary**
+
+| Issue | Severity | Action Needed |
+|-------|----------|---------------|
+| Part 1 terminology ('ADDED' vs 'ACTIVE') | Low | Optional: Clarify with comment or rename |
+| `created_date` update behavior | **High** | **Confirm with dev team** |
+| Performance (indexes) | Medium | Add if queries are slow |
+| NULL handling in JOINs | Low | Add ISNULL/COALESCE if needed |
+| Store filtering logic | Low | Verify intended behavior |
+
+---
+
+**Next Steps**:
+1. Confirm whether `created_date` updates on row modifications
+2. Let me know about the "one more operation" you mentioned
+3. I can provide specific SQL fixes once we clarify point #1
+
+What are your thoughts? Any areas you want me to dive deeper into?

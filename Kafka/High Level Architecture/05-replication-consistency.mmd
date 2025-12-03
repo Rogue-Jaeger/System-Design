@@ -1,0 +1,474 @@
+graph TB
+    subgraph "Kafka Cluster - Replication Architecture"
+        subgraph "Topic: orders, Partition: 0, Replication Factor: 3"
+            Leader[Leader Replica<br/>Broker 1]
+            Follower1[Follower Replica 1<br/>Broker 2]
+            Follower2[Follower Replica 2<br/>Broker 3]
+            
+            subgraph "Leader Replica Details"
+                LeaderLog[Leader Log]
+                LEO_L[Log End Offset (LEO)<br/>Offset: 1000<br/>Last written offset]
+                HW_L[High Watermark (HW)<br/>Offset: 995<br/>Last committed offset]
+                
+                Leader --> LeaderLog
+                LeaderLog --> LEO_L
+                LeaderLog --> HW_L
+                
+                subgraph "Leader Log Segments"
+                    L_Seg1[Segment 0-499<br/>Committed]
+                    L_Seg2[Segment 500-994<br/>Committed]
+                    L_Seg3[Segment 995-999<br/>Committed up to HW]
+                    L_Seg4[Segment 1000+<br/>Uncommitted]
+                    
+                    LeaderLog --> L_Seg1
+                    LeaderLog --> L_Seg2
+                    LeaderLog --> L_Seg3
+                    LeaderLog --> L_Seg4
+                end
+            end
+            
+            subgraph "Follower 1 Details"
+                Follower1Log[Follower 1 Log]
+                LEO_F1[Log End Offset (LEO)<br/>Offset: 995<br/>In-sync]
+                HW_F1[High Watermark (HW)<br/>Offset: 995<br/>Updated from leader]
+                
+                Follower1 --> Follower1Log
+                Follower1Log --> LEO_F1
+                Follower1Log --> HW_F1
+                
+                F1_Fetcher[Replica Fetcher Thread<br/>Fetches from Leader]
+                
+                Follower1 --> F1_Fetcher
+            end
+            
+            subgraph "Follower 2 Details"
+                Follower2Log[Follower 2 Log]
+                LEO_F2[Log End Offset (LEO)<br/>Offset: 990<br/>Lagging]
+                HW_F2[High Watermark (HW)<br/>Offset: 985<br/>Behind]
+                
+                Follower2 --> Follower2Log
+                Follower2Log --> LEO_F2
+                Follower2Log --> HW_F2
+                
+                F2_Fetcher[Replica Fetcher Thread<br/>Fetches from Leader<br/>Slow/Network issues]
+                
+                Follower2 --> F2_Fetcher
+            end
+        end
+        
+        subgraph "In-Sync Replica (ISR) Set"
+            ISR[ISR Set<br/>Partition 0]
+            
+            ISR_Leader[Leader: Broker 1<br/>LEO: 1000]
+            ISR_F1[Follower: Broker 2<br/>LEO: 995<br/>Within replica.lag.time.max.ms]
+            ISR_F2_Out[Follower: Broker 3<br/>LEO: 990<br/>REMOVED from ISR<br/>Exceeded lag threshold]
+            
+            ISR --> ISR_Leader
+            ISR --> ISR_F1
+            ISR -.->|Removed| ISR_F2_Out
+            
+            subgraph "ISR Management"
+                ISRConfig[ISR Configuration]
+                LagTime[replica.lag.time.max.ms<br/>Default: 10000 (10s)]
+                LagCheck[Lag Check<br/>If follower doesn't fetch<br/>within threshold, remove from ISR]
+                
+                ISRConfig --> LagTime
+                ISRConfig --> LagCheck
+                
+                ISRShrink[ISR Shrink<br/>Remove slow follower]
+                ISRExpand[ISR Expand<br/>Add caught-up follower]
+                
+                LagCheck --> ISRShrink
+                LagCheck --> ISRExpand
+            end
+            
+            ISR --> ISRConfig
+        end
+        
+        subgraph "Controller - ISR Management"
+            Controller[Controller<br/>Broker 1]
+            
+            ISRUpdate[ISR Update Process]
+            
+            subgraph "ISR Update Steps"
+                DetectChange[1. Detect ISR Change<br/>Leader reports to controller]
+                UpdateZK[2. Update ZooKeeper/KRaft<br/>/brokers/topics/[topic]/partitions/[partition]/state]
+                NotifyBrokers[3. Notify All Brokers<br/>UpdateMetadata request]
+                UpdateCache[4. Update Metadata Cache<br/>All brokers update]
+            end
+            
+            ISRUpdate --> DetectChange
+            DetectChange --> UpdateZK
+            UpdateZK --> NotifyBrokers
+            NotifyBrokers --> UpdateCache
+            
+            Controller --> ISRUpdate
+        end
+        
+        ISRShrink -.->|Triggers| Controller
+        ISRExpand -.->|Triggers| Controller
+    end
+    
+    subgraph "Replication Protocol"
+        subgraph "Producer Write Path"
+            Producer[Producer]
+            ProduceReq[Produce Request<br/>acks configuration]
+            
+            Producer --> ProduceReq
+            
+            subgraph "Acks Configuration"
+                Acks0[acks=0<br/>Fire and forget<br/>No acknowledgment<br/>Fastest, no durability]
+                Acks1[acks=1<br/>Leader acknowledgment<br/>Leader writes to log<br/>Fast, some durability risk]
+                AcksAll[acks=all / -1<br/>ISR acknowledgment<br/>All ISR replicas write<br/>Slowest, strongest durability]
+                
+                ProduceReq --> Acks0
+                ProduceReq --> Acks1
+                ProduceReq --> AcksAll
+            end
+            
+            subgraph "Write to Leader"
+                LeaderWrite[Leader Writes to Log]
+                AppendLog[Append to Active Segment]
+                UpdateLEO[Update Leader LEO]
+                
+                LeaderWrite --> AppendLog
+                AppendLog --> UpdateLEO
+            end
+            
+            AcksAll --> LeaderWrite
+            
+            subgraph "Replication to Followers"
+                FollowerFetch[Followers Fetch from Leader]
+                
+                FetchReq[Fetch Request<br/>fetch_offset, max_bytes]
+                FetchResp[Fetch Response<br/>records, high_watermark]
+                
+                FollowerFetch --> FetchReq
+                FetchReq --> FetchResp
+                
+                FollowerWrite[Follower Writes to Log]
+                FollowerUpdateLEO[Update Follower LEO]
+                
+                FetchResp --> FollowerWrite
+                FollowerWrite --> FollowerUpdateLEO
+                
+                NextFetch[Next Fetch Includes LEO<br/>Leader tracks follower progress]
+                
+                FollowerUpdateLEO --> NextFetch
+            end
+            
+            LeaderWrite --> FollowerFetch
+            
+            subgraph "High Watermark Update"
+                HWUpdate[Leader Updates HW]
+                
+                MinISR_LEO[HW = min(LEO of all ISR replicas)]
+                CommitPoint[Commit Point<br/>Messages up to HW are committed]
+                
+                HWUpdate --> MinISR_LEO
+                MinISR_LEO --> CommitPoint
+                
+                HWPropagate[HW Propagated to Followers<br/>In next fetch response]
+                
+                CommitPoint --> HWPropagate
+            end
+            
+            NextFetch --> HWUpdate
+            
+            subgraph "Acknowledgment"
+                AckCondition[Ack Condition Check]
+                
+                Ack0_Immediate[acks=0: Immediate<br/>No wait]
+                Ack1_Leader[acks=1: After leader write<br/>Wait for leader LEO update]
+                AckAll_ISR[acks=all: After ISR replication<br/>Wait for HW update]
+                
+                AckCondition --> Ack0_Immediate
+                AckCondition --> Ack1_Leader
+                AckCondition --> AckAll_ISR
+                
+                ProduceResp[Produce Response<br/>offset, timestamp]
+                
+                AckAll_ISR --> ProduceResp
+            end
+            
+            HWUpdate --> AckCondition
+            ProduceResp --> Producer
+        end
+        
+        subgraph "Consumer Read Path"
+            Consumer[Consumer]
+            ConsumerFetch[Fetch Request<br/>fetch_offset]
+            
+            Consumer --> ConsumerFetch
+            
+            subgraph "Read from Leader"
+                LeaderRead[Leader Reads from Log]
+                CheckHW[Check High Watermark]
+                ReturnCommitted[Return Only Committed Records<br/>offset < HW]
+                
+                ConsumerFetch --> LeaderRead
+                LeaderRead --> CheckHW
+                CheckHW --> ReturnCommitted
+                
+                FetchResponse[Fetch Response<br/>records, high_watermark]
+                
+                ReturnCommitted --> FetchResponse
+            end
+            
+            FetchResponse --> Consumer
+            
+            subgraph "Read Consistency"
+                Consistency[Consistency Guarantee]
+                
+                ReadCommitted[Read Committed<br/>Only HW and below<br/>Never see uncommitted]
+                NoStaleReads[No Stale Reads<br/>HW ensures all ISR have data]
+                
+                Consistency --> ReadCommitted
+                Consistency --> NoStaleReads
+            end
+            
+            CheckHW -.->|Ensures| Consistency
+        end
+    end
+    
+    subgraph "Leader Election"
+        subgraph "Leader Failure Scenario"
+            LeaderFail[Leader Fails<br/>Broker 1 down]
+            
+            ControllerDetect[Controller Detects Failure<br/>ZooKeeper watch or heartbeat]
+            
+            LeaderFail --> ControllerDetect
+            
+            subgraph "Election Process"
+                ElectionStart[Start Leader Election<br/>For affected partitions]
+                
+                SelectNewLeader[Select New Leader<br/>From ISR]
+                
+                subgraph "Leader Selection Criteria"
+                    ISRFirst[1. Must be in ISR<br/>unclean.leader.election.enable=false]
+                    PreferredReplica[2. Prefer first replica in ISR<br/>Preferred leader]
+                    CatchUp[3. Must be caught up<br/>LEO close to old leader]
+                end
+                
+                SelectNewLeader --> ISRFirst
+                SelectNewLeader --> PreferredReplica
+                SelectNewLeader --> CatchUp
+                
+                ElectionStart --> SelectNewLeader
+                
+                NewLeader[New Leader: Broker 2<br/>Was Follower 1]
+                
+                SelectNewLeader --> NewLeader
+                
+                LeaderAndISR[LeaderAndIsr Request<br/>To new leader and followers]
+                
+                NewLeader --> LeaderAndISR
+                
+                subgraph "LeaderAndIsr Details"
+                    LAI_Leader[leader: Broker 2]
+                    LAI_ISR[isr: [Broker 2]]
+                    LAI_Generation[controller_epoch, leader_epoch]
+                    
+                    LeaderAndISR --> LAI_Leader
+                    LeaderAndISR --> LAI_ISR
+                    LeaderAndISR --> LAI_Generation
+                end
+                
+                UpdateMetadata[UpdateMetadata Request<br/>To all brokers]
+                
+                LeaderAndISR --> UpdateMetadata
+                
+                ClientsUpdate[Clients Update Metadata<br/>Producers and consumers<br/>redirect to new leader]
+                
+                UpdateMetadata --> ClientsUpdate
+            end
+            
+            ControllerDetect --> ElectionStart
+        end
+        
+        subgraph "Unclean Leader Election"
+            UncleanConfig[unclean.leader.election.enable]
+            
+            UncleanFalse[false (default)<br/>Wait for ISR replica<br/>Availability over durability<br/>Possible data loss if all ISR down]
+            UncleanTrue[true<br/>Allow non-ISR replica<br/>Durability over availability<br/>Guaranteed data loss]
+            
+            UncleanConfig --> UncleanFalse
+            UncleanConfig --> UncleanTrue
+            
+            subgraph "Unclean Election Scenario"
+                AllISRDown[All ISR Replicas Down]
+                OnlyNonISR[Only Non-ISR Replica Available<br/>Broker 3 with LEO 990]
+                
+                AllISRDown --> OnlyNonISR
+                
+                UncleanChoice[Unclean Election Decision]
+                
+                OnlyNonISR --> UncleanChoice
+                
+                WaitForISR[Wait for ISR<br/>Partition unavailable]
+                ElectNonISR[Elect Non-ISR<br/>Data loss: offsets 990-1000]
+                
+                UncleanChoice -->|unclean=false| WaitForISR
+                UncleanChoice -->|unclean=true| ElectNonISR
+            end
+        end
+        
+        subgraph "Preferred Leader Election"
+            PreferredElection[Preferred Leader Election]
+            
+            PreferredReplica2[Preferred Replica<br/>First in replica list<br/>Defined in topic config]
+            
+            PreferredElection --> PreferredReplica2
+            
+            AutoBalance[auto.leader.rebalance.enable<br/>Automatic rebalancing]
+            ManualBalance[Manual Trigger<br/>kafka-preferred-replica-election.sh]
+            
+            PreferredElection --> AutoBalance
+            PreferredElection --> ManualBalance
+            
+            subgraph "Rebalance Benefits"
+                LoadBalance[Load Balancing<br/>Distribute leadership]
+                AvoidHotSpot[Avoid Hot Spots<br/>Even resource usage]
+            end
+            
+            PreferredElection --> LoadBalance
+            PreferredElection --> AvoidHotSpot
+        end
+    end
+    
+    subgraph "Consistency Guarantees"
+        subgraph "Durability Guarantees"
+            Durability[Durability Configuration]
+            
+            MinISR[min.insync.replicas<br/>Minimum ISR size for writes]
+            MinISR2[min.insync.replicas=2<br/>At least 2 replicas must ack]
+            
+            Durability --> MinISR
+            MinISR --> MinISR2
+            
+            subgraph "Write Rejection"
+                ISRBelowMin[ISR Size < min.insync.replicas]
+                RejectWrite[Reject Write<br/>NOT_ENOUGH_REPLICAS]
+                
+                ISRBelowMin --> RejectWrite
+            end
+            
+            MinISR2 -.->|Enforces| ISRBelowMin
+            
+            subgraph "Durability Levels"
+                Level1[RF=3, min.isr=1, acks=all<br/>Tolerate 2 failures, weak]
+                Level2[RF=3, min.isr=2, acks=all<br/>Tolerate 1 failure, balanced]
+                Level3[RF=3, min.isr=3, acks=all<br/>Tolerate 0 failures, strongest]
+                
+                Durability --> Level1
+                Durability --> Level2
+                Durability --> Level3
+            end
+        end
+        
+        subgraph "Ordering Guarantees"
+            Ordering[Ordering Guarantees]
+            
+            PartitionOrder[Partition-Level Ordering<br/>Messages in same partition<br/>ordered by offset]
+            
+            Ordering --> PartitionOrder
+            
+            subgraph "Producer Ordering"
+                MaxInFlight[max.in.flight.requests.per.connection]
+                
+                MIF1[=1: Strict ordering<br/>One request at a time<br/>Low throughput]
+                MIF5[>1: Possible reordering<br/>On retry with idempotence=false]
+                MIF5_Idempotent[>1 with idempotence=true<br/>Ordering preserved<br/>High throughput]
+                
+                MaxInFlight --> MIF1
+                MaxInFlight --> MIF5
+                MaxInFlight --> MIF5_Idempotent
+            end
+            
+            Ordering --> MaxInFlight
+            
+            NoGlobalOrder[No Cross-Partition Ordering<br/>Use single partition for global order]
+            
+            Ordering --> NoGlobalOrder
+        end
+        
+        subgraph "Delivery Semantics"
+            Delivery[Delivery Semantics]
+            
+            subgraph "At-Most-Once"
+                AtMostOnce[At-Most-Once<br/>acks=0 or acks=1<br/>No retries<br/>Possible message loss]
+            end
+            
+            Delivery --> AtMostOnce
+            
+            subgraph "At-Least-Once"
+                AtLeastOnce[At-Least-Once<br/>acks=all<br/>retries > 0<br/>Possible duplicates]
+            end
+            
+            Delivery --> AtLeastOnce
+            
+            subgraph "Exactly-Once"
+                ExactlyOnce[Exactly-Once<br/>enable.idempotence=true<br/>transactional.id set<br/>No loss, no duplicates]
+                
+                IdempotentProducer[Idempotent Producer<br/>PID, epoch, sequence numbers]
+                TransactionalProducer[Transactional Producer<br/>Atomic multi-partition writes]
+                
+                ExactlyOnce --> IdempotentProducer
+                ExactlyOnce --> TransactionalProducer
+            end
+            
+            Delivery --> ExactlyOnce
+        end
+    end
+    
+    subgraph "Failure Scenarios & Recovery"
+        subgraph "Broker Failure"
+            BrokerDown[Broker Failure]
+            
+            LeaderDown[Leader Down<br/>Leader election triggered]
+            FollowerDown[Follower Down<br/>Removed from ISR<br/>No leader election]
+            
+            BrokerDown --> LeaderDown
+            BrokerDown --> FollowerDown
+            
+            BrokerRecover[Broker Recovery]
+            
+            CatchUpReplication[Catch-Up Replication<br/>Fetch from leader]
+            RejoinISR[Rejoin ISR<br/>When caught up]
+            
+            BrokerRecover --> CatchUpReplication
+            CatchUpReplication --> RejoinISR
+        end
+        
+        subgraph "Network Partition"
+            NetPartition[Network Partition]
+            
+            SplitBrain[Split-Brain Prevention<br/>Controller uses ZooKeeper/KRaft<br/>Epoch-based fencing]
+            
+            NetPartition --> SplitBrain
+            
+            PartitionedBroker[Partitioned Broker<br/>Loses controller connection<br/>Steps down as leader]
+            
+            NetPartition --> PartitionedBroker
+        end
+        
+        subgraph "Data Corruption"
+            Corruption[Data Corruption]
+            
+            ReplicaRecovery[Replica Recovery<br/>Delete corrupted segments<br/>Re-replicate from leader]
+            
+            Corruption --> ReplicaRecovery
+            
+            ChecksumVerification[Checksum Verification<br/>CRC32 per record batch<br/>Detect corruption]
+            
+            Corruption --> ChecksumVerification
+        end
+    end
+    
+    style Leader fill:#ff9999
+    style Follower1 fill:#99ff99
+    style Follower2 fill:#ffcc99
+    style ISR fill:#99ccff
+    style Controller fill:#cc99ff
+    style HWUpdate fill:#ffff99
+    style NewLeader fill:#99ff99

@@ -1,0 +1,521 @@
+graph TB
+    subgraph "Consumer Application"
+        App[Application Code]
+        ConsumerAPI[KafkaConsumer API<br/>subscribe(), poll(), commit()]
+        
+        App --> ConsumerAPI
+        
+        subgraph "Consumer Configuration"
+            Config[Consumer Config]
+            BootstrapServers[bootstrap.servers]
+            GroupId[group.id]
+            KeyDeserializer[key.deserializer]
+            ValueDeserializer[value.deserializer]
+            AutoOffsetReset[auto.offset.reset:<br/>earliest, latest, none]
+            EnableAutoCommit[enable.auto.commit: true]
+            AutoCommitInterval[auto.commit.interval.ms: 5000]
+            SessionTimeout[session.timeout.ms: 10000]
+            HeartbeatInterval[heartbeat.interval.ms: 3000]
+            MaxPollRecords[max.poll.records: 500]
+            MaxPollInterval[max.poll.interval.ms: 300000]
+            FetchMinBytes[fetch.min.bytes: 1]
+            FetchMaxWait[fetch.max.wait.ms: 500]
+            MaxPartitionFetch[max.partition.fetch.bytes: 1MB]
+            IsolationLevel[isolation.level:<br/>read_uncommitted, read_committed]
+            
+            Config --> BootstrapServers
+            Config --> GroupId
+            Config --> KeyDeserializer
+            Config --> ValueDeserializer
+            Config --> AutoOffsetReset
+            Config --> EnableAutoCommit
+            Config --> AutoCommitInterval
+            Config --> SessionTimeout
+            Config --> HeartbeatInterval
+            Config --> MaxPollRecords
+            Config --> MaxPollInterval
+            Config --> FetchMinBytes
+            Config --> FetchMaxWait
+            Config --> MaxPartitionFetch
+            Config --> IsolationLevel
+        end
+        
+        ConsumerAPI --> Config
+    end
+    
+    subgraph "Consumer Internals"
+        subgraph "Subscription State"
+            SubState[Subscription State]
+            
+            subgraph "Subscription Types"
+                TopicSub[Topic Subscription<br/>subscribe(topics)]
+                PatternSub[Pattern Subscription<br/>subscribe(pattern)]
+                ManualAssign[Manual Assignment<br/>assign(partitions)]
+            end
+            
+            SubState --> TopicSub
+            SubState --> PatternSub
+            SubState --> ManualAssign
+            
+            subgraph "Assignment State"
+                AssignedPartitions[Assigned Partitions<br/>Set<TopicPartition>]
+                PartitionStates[Partition States<br/>FETCHING, PAUSED]
+                PositionMap[Position Map<br/>partition -> offset]
+                CommittedMap[Committed Offset Map<br/>partition -> OffsetAndMetadata]
+            end
+            
+            SubState --> AssignedPartitions
+            SubState --> PartitionStates
+            SubState --> PositionMap
+            SubState --> CommittedMap
+        end
+        
+        ConsumerAPI --> SubState
+        
+        subgraph "Group Coordinator Client"
+            CoordClient[Coordinator Client]
+            
+            subgraph "Coordinator Discovery"
+                FindCoord[Find Coordinator<br/>Hash(group.id) % 50]
+                CoordConnection[Coordinator Connection<br/>Dedicated to __consumer_offsets partition leader]
+            end
+            
+            CoordClient --> FindCoord
+            FindCoord --> CoordConnection
+            
+            subgraph "Heartbeat Thread"
+                HBThread[Heartbeat Thread<br/>Background thread]
+                HBTimer[Heartbeat Timer<br/>heartbeat.interval.ms]
+                SessionTimer[Session Timer<br/>session.timeout.ms]
+                
+                HBThread --> HBTimer
+                HBThread --> SessionTimer
+                
+                HBRequest[Heartbeat Request<br/>group.id, generation.id, member.id]
+                HBResponse[Heartbeat Response<br/>error_code]
+                
+                HBThread --> HBRequest
+                HBRequest --> HBResponse
+                
+                subgraph "Heartbeat Responses"
+                    HBSuccess[SUCCESS<br/>Continue]
+                    RebalanceInProgress[REBALANCE_IN_PROGRESS<br/>Rejoin group]
+                    UnknownMember[UNKNOWN_MEMBER_ID<br/>Rejoin group]
+                    IllegalGen[ILLEGAL_GENERATION<br/>Rejoin group]
+                end
+                
+                HBResponse --> HBSuccess
+                HBResponse --> RebalanceInProgress
+                HBResponse --> UnknownMember
+                HBResponse --> IllegalGen
+            end
+            
+            CoordClient --> HBThread
+            
+            subgraph "Rebalance Protocol"
+                Rebalance[Rebalance Manager]
+                
+                subgraph "Rebalance Phases"
+                    JoinPhase[Join Phase]
+                    SyncPhase[Sync Phase]
+                end
+                
+                Rebalance --> JoinPhase
+                Rebalance --> SyncPhase
+                
+                subgraph "Join Group Process"
+                    JoinRequest[JoinGroup Request<br/>group.id, member.id,<br/>protocol_type, protocols]
+                    
+                    Protocols[Protocols<br/>List of supported strategies]
+                    RangeProtocol[Range Protocol]
+                    RoundRobinProtocol[RoundRobin Protocol]
+                    StickyProtocol[Sticky Protocol]
+                    CoopStickyProtocol[CooperativeSticky Protocol]
+                    
+                    Protocols --> RangeProtocol
+                    Protocols --> RoundRobinProtocol
+                    Protocols --> StickyProtocol
+                    Protocols --> CoopStickyProtocol
+                    
+                    JoinRequest --> Protocols
+                    
+                    JoinResponse[JoinGroup Response<br/>generation.id, protocol,<br/>leader, member.id, members]
+                    
+                    JoinRequest --> JoinResponse
+                    
+                    LeaderElection[Leader Election<br/>First to join is leader]
+                    
+                    JoinResponse --> LeaderElection
+                end
+                
+                JoinPhase --> JoinRequest
+                
+                subgraph "Sync Group Process"
+                    SyncRequest[SyncGroup Request<br/>group.id, generation.id,<br/>member.id, assignments]
+                    
+                    LeaderAssignment[Leader Computes Assignment<br/>Uses selected protocol]
+                    MemberAssignment[Member Assignment<br/>TopicPartitions per member]
+                    
+                    LeaderElection --> LeaderAssignment
+                    LeaderAssignment --> MemberAssignment
+                    MemberAssignment --> SyncRequest
+                    
+                    SyncResponse[SyncGroup Response<br/>assignment]
+                    
+                    SyncRequest --> SyncResponse
+                end
+                
+                SyncPhase --> SyncRequest
+                
+                subgraph "Rebalance Types"
+                    EagerRebalance[Eager Rebalance<br/>Stop-the-world<br/>Revoke all, reassign all]
+                    CooperativeRebalance[Cooperative Rebalance<br/>Incremental<br/>Revoke only reassigned]
+                end
+                
+                Rebalance --> EagerRebalance
+                Rebalance --> CooperativeRebalance
+                
+                subgraph "Rebalance Callbacks"
+                    OnPartitionsRevoked[onPartitionsRevoked()<br/>Before rebalance]
+                    OnPartitionsAssigned[onPartitionsAssigned()<br/>After rebalance]
+                    OnPartitionsLost[onPartitionsLost()<br/>Unclean revocation]
+                end
+                
+                Rebalance --> OnPartitionsRevoked
+                Rebalance --> OnPartitionsAssigned
+                Rebalance --> OnPartitionsLost
+            end
+            
+            CoordClient --> Rebalance
+            
+            subgraph "Offset Management"
+                OffsetMgr[Offset Manager]
+                
+                subgraph "Offset Commit"
+                    AutoCommit[Auto Commit<br/>enable.auto.commit=true<br/>Periodic in poll()]
+                    SyncCommit[Sync Commit<br/>commitSync()<br/>Blocking]
+                    AsyncCommit[Async Commit<br/>commitAsync()<br/>Non-blocking]
+                    
+                    OffsetMgr --> AutoCommit
+                    OffsetMgr --> SyncCommit
+                    OffsetMgr --> AsyncCommit
+                    
+                    CommitRequest[OffsetCommit Request<br/>group.id, generation.id,<br/>member.id, topics]
+                    CommitResponse[OffsetCommit Response<br/>topics, error_code]
+                    
+                    SyncCommit --> CommitRequest
+                    AsyncCommit --> CommitRequest
+                    CommitRequest --> CommitResponse
+                end
+                
+                subgraph "Offset Fetch"
+                    FetchOffsets[Fetch Committed Offsets<br/>On assignment]
+                    
+                    FetchRequest[OffsetFetch Request<br/>group.id, topics]
+                    FetchResponse[OffsetFetch Response<br/>topics, partitions, offset,<br/>metadata, error_code]
+                    
+                    FetchOffsets --> FetchRequest
+                    FetchRequest --> FetchResponse
+                end
+                
+                OffsetMgr --> FetchOffsets
+                
+                subgraph "Offset Reset"
+                    ResetStrategy[Reset Strategy<br/>auto.offset.reset]
+                    
+                    ResetEarliest[Earliest<br/>Beginning of log]
+                    ResetLatest[Latest<br/>End of log]
+                    ResetNone[None<br/>Throw exception]
+                    
+                    ResetStrategy --> ResetEarliest
+                    ResetStrategy --> ResetLatest
+                    ResetStrategy --> ResetNone
+                    
+                    ListOffsets[ListOffsets Request<br/>Get earliest/latest offset]
+                    
+                    ResetStrategy --> ListOffsets
+                end
+                
+                OffsetMgr --> ResetStrategy
+            end
+            
+            CoordClient --> OffsetMgr
+        end
+        
+        SubState -.->|Triggers| CoordClient
+        
+        subgraph "Fetcher"
+            Fetcher[Fetcher]
+            
+            subgraph "Metadata Management"
+                MetadataCache[Metadata Cache]
+                MetadataUpdate[Metadata Update<br/>metadata.max.age.ms]
+                
+                Fetcher --> MetadataCache
+                MetadataCache --> MetadataUpdate
+            end
+            
+            subgraph "Fetch Manager"
+                FetchMgr[Fetch Manager]
+                
+                subgraph "Fetch Request Building"
+                    SelectPartitions[Select Partitions to Fetch<br/>Not paused, has position]
+                    GroupByLeader[Group by Leader Broker]
+                    CreateFetchReq[Create Fetch Request<br/>Per broker]
+                    
+                    FetchMgr --> SelectPartitions
+                    SelectPartitions --> GroupByLeader
+                    GroupByLeader --> CreateFetchReq
+                end
+                
+                subgraph "Fetch Request Details"
+                    FetchReq[Fetch Request]
+                    ReqParams[Request Parameters<br/>max_wait_ms, min_bytes,<br/>max_bytes, isolation_level]
+                    TopicFetch[Topics<br/>topic, partitions]
+                    PartitionFetch[Partition Fetch<br/>partition, fetch_offset,<br/>log_start_offset, max_bytes]
+                    
+                    FetchReq --> ReqParams
+                    FetchReq --> TopicFetch
+                    TopicFetch --> PartitionFetch
+                end
+                
+                CreateFetchReq --> FetchReq
+                
+                subgraph "Fetch Response Handling"
+                    FetchResp[Fetch Response]
+                    RespData[Response Data<br/>throttle_time_ms, topics]
+                    PartitionResp[Partition Response<br/>partition, error_code,<br/>high_watermark, records]
+                    
+                    FetchResp --> RespData
+                    RespData --> PartitionResp
+                    
+                    RecordBatch[Record Batch<br/>Compressed batch]
+                    Decompress[Decompress<br/>If compressed]
+                    ParseRecords[Parse Records<br/>Deserialize]
+                    
+                    PartitionResp --> RecordBatch
+                    RecordBatch --> Decompress
+                    Decompress --> ParseRecords
+                end
+                
+                FetchReq --> FetchResp
+                
+                subgraph "Fetch Errors"
+                    FetchErrors[Error Handling]
+                    
+                    OffsetOutOfRange[OFFSET_OUT_OF_RANGE<br/>Reset offset]
+                    NotLeader[NOT_LEADER_FOR_PARTITION<br/>Update metadata]
+                    UnknownTopic[UNKNOWN_TOPIC_OR_PARTITION<br/>Update metadata]
+                    
+                    FetchErrors --> OffsetOutOfRange
+                    FetchErrors --> NotLeader
+                    FetchErrors --> UnknownTopic
+                end
+                
+                FetchResp -.->|On error| FetchErrors
+            end
+            
+            Fetcher --> FetchMgr
+            
+            subgraph "Completed Fetches Queue"
+                CompletedFetches[Completed Fetches Queue<br/>FIFO queue]
+                FetchBuffer[Fetch Buffer<br/>Buffered records per partition]
+                
+                ParseRecords --> CompletedFetches
+                CompletedFetches --> FetchBuffer
+            end
+            
+            subgraph "Record Deserialization"
+                Deserializer[Deserializer]
+                KeyDeser[Key Deserializer]
+                ValueDeser[Value Deserializer]
+                HeaderDeser[Header Deserializer]
+                
+                Deserializer --> KeyDeser
+                Deserializer --> ValueDeser
+                Deserializer --> HeaderDeser
+                
+                ConsumerRecord[ConsumerRecord<br/>topic, partition, offset,<br/>timestamp, key, value, headers]
+                
+                Deserializer --> ConsumerRecord
+            end
+            
+            FetchBuffer --> Deserializer
+            
+            subgraph "Transaction Filtering"
+                TxnFilter[Transaction Filter<br/>isolation.level=read_committed]
+                
+                AbortedTxns[Aborted Transactions<br/>Filter control records]
+                CommittedTxns[Committed Transactions<br/>Return records]
+                
+                TxnFilter --> AbortedTxns
+                TxnFilter --> CommittedTxns
+            end
+            
+            Deserializer -.->|If read_committed| TxnFilter
+        end
+        
+        SubState -.->|Provides assignment| Fetcher
+        
+        subgraph "Network Client"
+            NetworkClient[Network Client]
+            Selector[NIO Selector]
+            
+            NetworkClient --> Selector
+            
+            subgraph "Connection Pool"
+                ConnPool[Connection Pool<br/>Per broker]
+                LeastLoadedNode[Least Loaded Node Selection]
+                
+                NetworkClient --> ConnPool
+                NetworkClient --> LeastLoadedNode
+            end
+        end
+        
+        CoordClient --> NetworkClient
+        Fetcher --> NetworkClient
+        
+        subgraph "Poll Loop"
+            PollLoop[poll() Method]
+            
+            subgraph "Poll Steps"
+                Step1[1. Update Fetch Positions<br/>If no position, fetch committed or reset]
+                Step2[2. Send Fetch Requests<br/>If no in-flight requests]
+                Step3[3. Poll Network<br/>Send/receive data]
+                Step4[4. Handle Responses<br/>Process fetch responses]
+                Step5[5. Trigger Callbacks<br/>Rebalance, interceptors]
+                Step6[6. Return Records<br/>Up to max.poll.records]
+                Step7[7. Auto-commit Offsets<br/>If enabled and interval passed]
+            end
+            
+            PollLoop --> Step1
+            Step1 --> Step2
+            Step2 --> Step3
+            Step3 --> Step4
+            Step4 --> Step5
+            Step5 --> Step6
+            Step6 --> Step7
+        end
+        
+        ConsumerAPI --> PollLoop
+        PollLoop --> Fetcher
+        PollLoop --> CoordClient
+        
+        subgraph "Consumer Interceptors"
+            Interceptors[Consumer Interceptors]
+            
+            OnConsume[onConsume()<br/>Before returned to app]
+            OnCommit[onCommit()<br/>After offset commit]
+            
+            Interceptors --> OnConsume
+            Interceptors --> OnCommit
+        end
+        
+        PollLoop -.->|Triggers| Interceptors
+        
+        subgraph "Partition Assignment Strategies"
+            AssignmentStrategies[Assignment Strategies]
+            
+            subgraph "Range Assignor"
+                Range[Range Assignor<br/>Default]
+                RangeLogic[Partitions / Consumers<br/>Per topic, ordered by partition]
+                RangeImbalance[Can cause imbalance<br/>with multiple topics]
+                
+                Range --> RangeLogic
+                Range --> RangeImbalance
+            end
+            
+            AssignmentStrategies --> Range
+            
+            subgraph "RoundRobin Assignor"
+                RoundRobin[RoundRobin Assignor]
+                RRLogic[All partitions across topics<br/>Distributed evenly]
+                RRRequirement[All consumers must subscribe<br/>to same topics]
+                
+                RoundRobin --> RRLogic
+                RoundRobin --> RRRequirement
+            end
+            
+            AssignmentStrategies --> RoundRobin
+            
+            subgraph "Sticky Assignor"
+                Sticky[Sticky Assignor]
+                StickyLogic[Minimize partition movement<br/>on rebalance]
+                StickyBenefit[Reduces rebalance overhead]
+                
+                Sticky --> StickyLogic
+                Sticky --> StickyBenefit
+            end
+            
+            AssignmentStrategies --> Sticky
+            
+            subgraph "CooperativeSticky Assignor"
+                CoopSticky[CooperativeSticky Assignor]
+                CoopLogic[Incremental rebalancing<br/>No stop-the-world]
+                CoopPhases[Multi-phase rebalance<br/>Revoke then assign]
+                
+                CoopSticky --> CoopLogic
+                CoopSticky --> CoopPhases
+            end
+            
+            AssignmentStrategies --> CoopSticky
+        end
+        
+        Rebalance -.->|Uses| AssignmentStrategies
+    end
+    
+    subgraph "Broker Interaction"
+        BrokerCoord[Broker - Group Coordinator]
+        BrokerLeader[Broker - Partition Leader]
+        
+        subgraph "Consumer Group State Machine"
+            GroupStates[Group State Machine]
+            
+            Empty[Empty<br/>No members]
+            PreparingRebalance[PreparingRebalance<br/>Waiting for members]
+            CompletingRebalance[CompletingRebalance<br/>Waiting for sync]
+            Stable[Stable<br/>Active consumption]
+            Dead[Dead<br/>Group removed]
+            
+            GroupStates --> Empty
+            GroupStates --> PreparingRebalance
+            GroupStates --> CompletingRebalance
+            GroupStates --> Stable
+            GroupStates --> Dead
+            
+            Empty -->|JoinGroup| PreparingRebalance
+            PreparingRebalance -->|All joined| CompletingRebalance
+            CompletingRebalance -->|All synced| Stable
+            Stable -->|Member leaves/fails| PreparingRebalance
+            Stable -->|All leave| Empty
+        end
+        
+        BrokerCoord --> GroupStates
+        
+        HBRequest --> BrokerCoord
+        JoinRequest --> BrokerCoord
+        SyncRequest --> BrokerCoord
+        CommitRequest --> BrokerCoord
+        FetchRequest --> BrokerCoord
+        
+        FetchReq --> BrokerLeader
+    end
+    
+    subgraph "Offset Storage"
+        OffsetsTopic[__consumer_offsets Topic<br/>50 partitions<br/>Compacted]
+        
+        OffsetKey[Offset Key<br/>group, topic, partition]
+        OffsetValue[Offset Value<br/>offset, metadata, timestamp]
+        
+        OffsetsTopic --> OffsetKey
+        OffsetsTopic --> OffsetValue
+        
+        BrokerCoord --> OffsetsTopic
+    end
+    
+    style ConsumerAPI fill:#99ccff
+    style CoordClient fill:#99ff99
+    style Fetcher fill:#ffcc99
+    style PollLoop fill:#ff9999
+    style Rebalance fill:#cc99ff
+    style OffsetMgr fill:#ffff99
