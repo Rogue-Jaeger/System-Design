@@ -121,3 +121,5 @@ Places where I faced problems were in calculating the load on the system quickly
 Generally incremented ids are being used here or range based id assignment to microservices, or we can use snowflake as well.
 
 The reason we're using an incremented id instead of using a hashing function is that I would want to see analytics for my generated URL like suppose if how many people clicked on my google.com shortened URL then I would not be able to decipher that so its recommened to give each user its own short URL cause of that.
+
+I was also getting issues while deciding whether to use SQL or NO SQL based on the read and write throughput that was shared with me. A lot of time was wasted here.
