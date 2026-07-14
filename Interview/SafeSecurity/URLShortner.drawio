@@ -1,0 +1,64 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="1Xm6OeRqyXARuXSqNXmK">
+    <mxGraphModel dx="2910" dy="1142" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;div&gt;URL Shortner&lt;/div&gt;" vertex="1">
+          <mxGeometry height="60" width="120" x="30" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="Functional Requirements:&lt;br&gt;&lt;br&gt;&lt;div&gt;1. Paste the url and get shortened url back.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. If you paste the short URL then you should be able to get the long and vice-versa.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. No authentication req for now&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. The URL should be having an expiry. 6 Months of no use.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="300" width="120" x="190" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="Non-Functional Requirements:&lt;br&gt;&lt;br&gt;&lt;div&gt;1. 100 URL&#39;s can be created/sec&amp;nbsp;&lt;/div&gt;&lt;div&gt;2. 1 Million reads per second&lt;/div&gt;&lt;div&gt;3. System should be highly available&lt;/div&gt;&lt;div&gt;5. Eventually Consistent&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="190" width="120" x="340" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-6" edge="1" parent="1" source="qWQqwVkxpHxcz5jvb_I_-4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="320" y="710" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="Browser/Mobile Application" vertex="1">
+          <mxGeometry height="60" width="120" x="40" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;div&gt;Capacity Estimation:&lt;br&gt;For creation flow:&lt;/div&gt;&lt;div&gt;1. String (URL): Compress it. 5000 Characters&lt;br&gt;2. Compressing it: 26*26*10&lt;/div&gt;&lt;div&gt;3. 100 URL&#39;s and they create suppose 50 URL&#39;s on avg per day and peak would be 500 URL&#39;s per day.&lt;/div&gt;&lt;div&gt;100 * 40,000,000,000 -&amp;gt; ~8.6 Million Per day 5000 characters 5KB -&amp;gt; 40GB data per day&amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="270" width="310" x="490" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-8" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="User will enter some URL" vertex="1">
+          <mxGeometry height="30" width="140" x="170" y="670" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-9" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;1. Hashing Mechanism (md5)&lt;/div&gt;&lt;div&gt;2. Persistent storage somewhere:&amp;nbsp; 1 mapping - long URL to short URL. cluser id: (short url) and partition id: (short url)&lt;/div&gt;&lt;div&gt;3. Redis - long to short and short to long:&amp;nbsp;&lt;/div&gt;&lt;div&gt;reading: Cache aside, writing: write through, LFU -&amp;gt; Eliminate extra nodes to sure.&lt;/div&gt;&lt;div&gt;4. Redis -&amp;gt; Fallback mechanism&lt;/div&gt;" vertex="1">
+          <mxGeometry height="160" width="350" x="210" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-11" edge="1" parent="1" source="qWQqwVkxpHxcz5jvb_I_-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="210" y="870" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="Load balancers" vertex="1">
+          <mxGeometry height="60" width="120" x="310" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-14" edge="1" parent="1" source="qWQqwVkxpHxcz5jvb_I_-13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="480" y="1020" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-17" edge="1" parent="1" source="qWQqwVkxpHxcz5jvb_I_-13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="qWQqwVkxpHxcz5jvb_I_-16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;div&gt;Short URL Generator Service.&lt;/div&gt;&lt;div&gt;(md5) -&amp;gt; short&lt;/div&gt;&lt;div&gt;5 -&amp;gt; Characters&lt;/div&gt;&lt;div&gt;bit.ly/2shSDFS&lt;/div&gt;" vertex="1">
+          <mxGeometry height="100" width="240" x="70" y="870" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-15" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Cassandra" vertex="1">
+          <mxGeometry height="60" width="120" x="425" y="1020" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-16" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="Redis" vertex="1">
+          <mxGeometry height="60" width="120" x="-140" y="960" as="geometry" />
+        </mxCell>
+        <mxCell id="qWQqwVkxpHxcz5jvb_I_-18" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Text" vertex="1">
+          <mxGeometry height="30" width="60" x="430" y="790" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
